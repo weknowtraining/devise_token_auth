@@ -23,8 +23,6 @@ module DeviseTokenAuth::Concerns::User
              :recoverable, :trackable, :validatable, :confirmable
     end
 
-    serialize :tokens, JSON unless tokens_has_json_column_type?
-
     if DeviseTokenAuth.default_callbacks
       include DeviseTokenAuth::Concerns::UserOmniauthCallbacks
     end
