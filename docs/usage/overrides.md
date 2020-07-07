@@ -44,7 +44,6 @@ To customize json rendering, implement the following protected controller method
 * render_create_error_redirect_url_not_allowed
 * render_create_success
 * render_create_error
-* render_create_error_email_already_exists
 * render_update_success
 * render_update_error
 * render_update_error_user_not_found
@@ -74,6 +73,11 @@ To customize json rendering, implement the following protected controller method
 ### Token Validations Controller
 * render_validate_token_success
 * render_validate_token_error
+
+### Confirmations Controller
+* render_create_error_missing_email
+* render_create_success
+* render_not_found_error
 
 ##### Example: all :controller options with default settings:
 

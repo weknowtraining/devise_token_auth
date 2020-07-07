@@ -19,10 +19,11 @@ class DeviseTokenAuth::ConfirmationsControllerTest < ActionController::TestCase
     describe 'Confirmation' do
       before do
         @redirect_url = Faker::Internet.url
-        @new_user = users(:unconfirmed_email_user)
+        @new_user = create(:user)
         @new_user.send_confirmation_instructions(redirect_url: @redirect_url)
         mail = ActionMailer::Base.deliveries.last
         @token, @client_config = token_and_client_config_from(mail.body)
+        @token_params = %w[access-token client client_id config expiry token uid]
       end
 
       test 'should generate raw token' do
@@ -38,32 +39,83 @@ class DeviseTokenAuth::ConfirmationsControllerTest < ActionController::TestCase
       end
 
       describe 'success' do
-        before do
-          get :show,
-              params: { confirmation_token: @token,
-                        redirect_url: @redirect_url },
-              xhr: true
-          @resource = assigns(:resource)
+        describe 'when authenticated' do
+          before do
+            sign_in(@new_user)
+            get :show,
+                params: { confirmation_token: @token,
+                          redirect_url: @redirect_url },
+                xhr: true
+            @resource = assigns(:resource)
+          end
+
+          test 'user should now be confirmed' do
+            assert @resource.confirmed?
+          end
+
+          test 'should save the authentication token' do
+            assert @resource.reload.tokens.present?
+          end
+
+          test 'should redirect to success url' do
+            assert_redirected_to(/^#{@redirect_url}/)
+          end
+
+          test 'redirect url includes token params' do
+            assert @token_params.all? { |param| response.body.include?(param) }
+            assert response.body.include?('account_confirmation_success')
+          end
         end
 
-        test 'user should now be confirmed' do
-          assert @resource.confirmed?
+        describe 'when unauthenticated' do
+          before do
+            sign_out(@new_user)
+            get :show,
+                params: { confirmation_token: @token,
+                          redirect_url: @redirect_url },
+                xhr: true
+            @resource = assigns(:resource)
+          end
+
+          test 'user should now be confirmed' do
+            assert @resource.confirmed?
+          end
+
+          test 'should redirect to success url' do
+            assert_redirected_to(/^#{@redirect_url}/)
+          end
+
+          test 'redirect url does not include token params' do
+            refute @token_params.any? { |param| response.body.include?(param) }
+            assert response.body.include?('account_confirmation_success')
+          end
         end
 
-        test 'should redirect to success url' do
-          assert_redirected_to(/^#{@redirect_url}/)
-        end
+        describe 'resend confirmation' do
+          before do
+            post :create,
+                params: { email: @new_user.email,
+                          redirect_url: @redirect_url },
+                xhr: true
+            @resource = assigns(:resource)
 
-        test 'the sign_in_count should be 1' do
-          assert @resource.sign_in_count == 1
-        end
+            @mail = ActionMailer::Base.deliveries.last
+            @token, @client_config = token_and_client_config_from(@mail.body)
+          end
 
-        test 'User shoud have the signed in info filled' do
-          assert @resource.current_sign_in_at?
-        end
+          test 'user should not be confirmed' do
+            assert_nil @resource.confirmed_at
+          end
 
-        test 'User shoud have the Last checkin filled' do
-          assert @resource.last_sign_in_at?
+          test 'should generate raw token' do
+            assert @token
+            assert_equal @new_user.confirmation_token, @token
+          end
+
+          test 'user should receive confirmation email' do
+            assert_equal @resource.email, @mail['to'].to_s
+          end
+
         end
       end
 
@@ -74,6 +126,18 @@ class DeviseTokenAuth::ConfirmationsControllerTest < ActionController::TestCase
           end
           @resource = assigns(:resource)
           refute @resource.confirmed?
+        end
+
+        test 'request resend confirmation without email' do
+          post :create, params: { email: nil }, xhr: true
+
+          assert_equal 401, response.status
+        end
+
+        test 'user should not be found on resend confirmation request' do
+          post :create, params: { email: 'bogus' }, xhr: true
+
+          assert_equal 404, response.status
         end
       end
     end
@@ -90,7 +154,7 @@ class DeviseTokenAuth::ConfirmationsControllerTest < ActionController::TestCase
 
       before do
         @config_name = 'altUser'
-        @new_user    = mangs(:unconfirmed_email_user)
+        @new_user    = create(:mang_user)
 
         @new_user.send_confirmation_instructions(client_config: @config_name)
 

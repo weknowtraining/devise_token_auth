@@ -7,14 +7,20 @@ SimpleCov.start 'rails' do
 end
 
 ENV['RAILS_ENV'] = 'test'
+DEVISE_TOKEN_AUTH_ORM = (ENV['DEVISE_TOKEN_AUTH_ORM'] || :active_record).to_sym
+
+puts "\n==> DeviseTokenAuth.orm = #{DEVISE_TOKEN_AUTH_ORM.inspect}"
 
 require File.expand_path('dummy/config/environment', __dir__)
-require 'rails/test_help'
+require 'active_support/testing/autorun'
 require 'minitest/rails'
 require 'mocha/minitest'
+require 'database_cleaner'
 
-ActiveSupport::TestCase.fixture_path = File.expand_path('fixtures', __dir__)
-ActionDispatch::IntegrationTest.fixture_path = File.expand_path('fixtures', __dir__)
+FactoryBot.definition_file_paths = [File.expand_path('factories', __dir__)]
+FactoryBot.find_definitions
+
+Dir[File.join(__dir__, 'support/**', '*.rb')].each { |file| require file }
 
 # I hate the default reporter. Use ProgressReporter instead.
 Minitest::Reporters.use! Minitest::Reporters::ProgressReporter.new
@@ -26,19 +32,21 @@ class ActionDispatch::IntegrationTest
 end
 
 class ActiveSupport::TestCase
-  ActiveRecord::Migration.check_pending!
+  include FactoryBot::Syntax::Methods
 
-  # Setup all fixtures in test/fixtures/*.(yml|csv) for all tests in alphabetical order.
-  #
-  # Note: You'll currently still have to declare fixtures explicitly in integration tests
-  # -- they do not yet inherit this setting
-  fixtures :all
+  ActiveRecord::Migration.check_pending! if DEVISE_TOKEN_AUTH_ORM == :active_record
+
+  strategies = { active_record: :transaction,
+                 mongoid: :truncation }
+  DatabaseCleaner.strategy = strategies[DEVISE_TOKEN_AUTH_ORM]
+  setup { DatabaseCleaner.start }
+  teardown { DatabaseCleaner.clean }
 
   # Add more helper methods to be used by all tests here...
 
   def age_token(user, client_id)
     if user.tokens[client_id]
-      user.tokens[client_id]['updated_at'] = Time.zone.now - (DeviseTokenAuth.batch_request_buffer_throttle + 10.seconds)
+      user.tokens[client_id]['updated_at'] = (Time.zone.now - (DeviseTokenAuth.batch_request_buffer_throttle + 10.seconds)).to_s(:rfc822)
       user.save!
     end
   end

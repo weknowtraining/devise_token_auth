@@ -4,21 +4,16 @@ require 'test_helper'
 
 class UserTest < ActiveSupport::TestCase
   describe User do
-    before do
-      @password    = Faker::Internet.password(10, 20)
-      @email       = Faker::Internet.email
-      @success_url = Faker::Internet.url
-      @resource    = User.new()
-    end
-
     describe 'serialization' do
       test 'hash should not include sensitive info' do
+        @resource = build(:user)
         refute @resource.as_json[:tokens]
       end
     end
 
     describe 'creation' do
       test 'save fails if uid is missing' do
+        @resource = User.new
         @resource.uid = nil
         @resource.save
 
@@ -28,19 +23,14 @@ class UserTest < ActiveSupport::TestCase
 
     describe 'email registration' do
       test 'model should not save if email is blank' do
-        @resource.provider              = 'email'
-        @resource.password              = @password
-        @resource.password_confirmation = @password
+        @resource = build(:user, email: nil)
 
         refute @resource.save
         assert @resource.errors.messages[:email] == [I18n.t('errors.messages.blank')]
       end
 
       test 'model should not save if email is not an email' do
-        @resource.provider              = 'email'
-        @resource.email                 = '@example.com'
-        @resource.password              = @password
-        @resource.password_confirmation = @password
+        @resource = build(:user, email: '@example.com')
 
         refute @resource.save
         assert @resource.errors.messages[:email] == [I18n.t('errors.messages.not_email')]
@@ -49,32 +39,19 @@ class UserTest < ActiveSupport::TestCase
 
     describe 'email uniqueness' do
       test 'model should not save if email is taken' do
-        provider = 'email'
-
-        User.create(
-          email: @email,
-          provider: provider,
-          password: @password,
-          password_confirmation: @password
-        )
-
-        @resource.email                 = @email
-        @resource.provider              = provider
-        @resource.password              = @password
-        @resource.password_confirmation = @password
+        user_attributes = attributes_for(:user)
+        create(:user, user_attributes)
+        @resource = build(:user, user_attributes)
 
         refute @resource.save
-        assert @resource.errors.messages[:email] == [I18n.t('errors.messages.taken')]
+        assert @resource.errors.messages[:email].first.include? 'taken'
         assert @resource.errors.messages[:email].none? { |e| e =~ /translation missing/ }
       end
     end
 
     describe 'oauth2 authentication' do
       test 'model should save even if email is blank' do
-        @resource.provider              = 'facebook'
-        @resource.uid                   = 123
-        @resource.password              = @password
-        @resource.password_confirmation = @password
+        @resource = build(:user, :facebook, email: nil)
 
         assert @resource.save
         assert @resource.errors.messages[:email].blank?
@@ -83,9 +60,7 @@ class UserTest < ActiveSupport::TestCase
 
     describe 'token expiry' do
       before do
-        @resource = users(:confirmed_email_user)
-        @resource.skip_confirmation!
-        @resource.save!
+        @resource = create(:user, :confirmed)
 
         @auth_headers = @resource.create_new_auth_token
 
@@ -101,45 +76,9 @@ class UserTest < ActiveSupport::TestCase
       end
     end
 
-    describe 'user specific token lifespan' do
-      before do
-        @resource = users(:confirmed_email_user)
-        @resource.skip_confirmation!
-        @resource.save!
-
-        auth_headers = @resource.create_new_auth_token
-        @token_global     = auth_headers['access-token']
-        @client_id_global = auth_headers['client']
-
-        def @resource.token_lifespan
-          1.minute
-        end
-
-        auth_headers = @resource.create_new_auth_token
-        @token_specific     = auth_headers['access-token']
-        @client_id_specific = auth_headers['client']
-      end
-
-      test 'works per user' do
-        assert @resource.token_is_current?(@token_global, @client_id_global)
-
-        time = Time.zone.now.to_i
-        expiry_global = @resource.tokens[@client_id_global]['expiry'] || @resource.tokens[@client_id_global][:expiry]
-
-        assert expiry_global > time + DeviseTokenAuth.token_lifespan - 5.seconds
-        assert expiry_global < time + DeviseTokenAuth.token_lifespan + 5.seconds
-
-        expiry_specific = @resource.tokens[@client_id_specific]['expiry'] || @resource.tokens[@client_id_specific][:expiry]
-        assert expiry_specific > time + 55.seconds
-        assert expiry_specific < time + 65.seconds
-      end
-    end
-
     describe 'expired tokens are destroyed on save' do
       before do
-        @resource = users(:confirmed_email_user)
-        @resource.skip_confirmation!
-        @resource.save!
+        @resource = create(:user, :confirmed)
 
         @old_auth_headers = @resource.create_new_auth_token
         @new_auth_headers = @resource.create_new_auth_token
@@ -157,9 +96,7 @@ class UserTest < ActiveSupport::TestCase
 
     describe 'nil tokens are handled properly' do
       before do
-        @resource = users(:confirmed_email_user)
-        @resource.skip_confirmation!
-        @resource.save!
+        @resource = create(:user, :confirmed)
       end
 
       test 'tokens can be set to nil' do

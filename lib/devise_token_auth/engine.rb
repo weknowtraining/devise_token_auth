@@ -14,6 +14,7 @@ module DeviseTokenAuth
   mattr_accessor :change_headers_on_each_request,
                  :max_number_of_devices,
                  :token_lifespan,
+                 :token_cost,
                  :batch_request_buffer_throttle,
                  :omniauth_prefix,
                  :default_confirm_success_url,
@@ -24,11 +25,14 @@ module DeviseTokenAuth
                  :remove_tokens_after_password_reset,
                  :default_callbacks,
                  :headers_names,
-                 :bypass_sign_in
+                 :bypass_sign_in,
+                 :send_confirmation_email,
+                 :require_client_password_reset_token
 
   self.change_headers_on_each_request       = true
   self.max_number_of_devices                = 10
   self.token_lifespan                       = 2.weeks
+  self.token_cost                           = 10
   self.batch_request_buffer_throttle        = 5.seconds
   self.omniauth_prefix                      = '/omniauth'
   self.default_confirm_success_url          = nil
@@ -44,6 +48,8 @@ module DeviseTokenAuth
                                                 'uid': 'uid',
                                                 'token-type': 'token-type' }
   self.bypass_sign_in                       = true
+  self.send_confirmation_email              = false
+  self.require_client_password_reset_token  = false
 
   def self.setup(&block)
     yield self

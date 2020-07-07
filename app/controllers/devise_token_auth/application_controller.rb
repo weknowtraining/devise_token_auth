@@ -3,7 +3,6 @@
 module DeviseTokenAuth
   class ApplicationController < DeviseController
     include DeviseTokenAuth::Concerns::SetUserByToken
-    include DeviseTokenAuth::Concerns::ResourceFinder
 
     def resource_data(opts = {})
       response_data = opts[:resource_json] || @resource.as_json
@@ -17,8 +16,8 @@ module DeviseTokenAuth
 
     protected
 
-    def blacklisted_redirect_url?
-      DeviseTokenAuth.redirect_whitelist && !DeviseTokenAuth::Url.whitelisted?(@redirect_url)
+    def blacklisted_redirect_url?(redirect_url)
+      DeviseTokenAuth.redirect_whitelist && !DeviseTokenAuth::Url.whitelisted?(redirect_url)
     end
 
     def build_redirect_headers(access_token, client, redirect_header_options = {})

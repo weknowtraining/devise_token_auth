@@ -1,7 +1,5 @@
 # frozen_string_literal: true
 
-require 'bcrypt'
-
 module DeviseTokenAuth::Concerns::User
   extend ActiveSupport::Concern
 
@@ -9,7 +7,7 @@ module DeviseTokenAuth::Concerns::User
     @token_equality_cache ||= {}
 
     key = "#{token_hash}/#{token}"
-    result = @token_equality_cache[key] ||= (::BCrypt::Password.new(token_hash) == token)
+    result = @token_equality_cache[key] ||= DeviseTokenAuth::TokenFactory.token_hash_is_token?(token_hash, token)
     @token_equality_cache = {} if @token_equality_cache.size > 10000
     result
   end
@@ -20,16 +18,20 @@ module DeviseTokenAuth::Concerns::User
       devise_modules.delete(:omniauthable)
     else
       devise :database_authenticatable, :registerable,
-             :recoverable, :trackable, :validatable, :confirmable
+             :recoverable, :validatable, :confirmable
+    end
+
+    if const_defined?('ActiveRecord') && ancestors.include?(ActiveRecord::Base)
+      include DeviseTokenAuth::Concerns::ActiveRecordSupport
+    end
+
+    if const_defined?('Mongoid') && ancestors.include?(Mongoid::Document)
+      include DeviseTokenAuth::Concerns::MongoidSupport
     end
 
     if DeviseTokenAuth.default_callbacks
       include DeviseTokenAuth::Concerns::UserOmniauthCallbacks
     end
-
-    # can't set default on text fields in mysql, simulate here instead.
-    after_save :set_empty_token_hash
-    after_initialize :set_empty_token_hash
 
     # get rid of dead tokens
     before_save :destroy_expired_tokens
@@ -41,6 +43,10 @@ module DeviseTokenAuth::Concerns::User
     def email_required?; false; end
     def email_changed?; false; end
     def will_save_change_to_email?; false; end
+
+    if DeviseTokenAuth.send_confirmation_email && devise_modules.include?(:confirmable)
+      include DeviseTokenAuth::Concerns::ConfirmableSupport
+    end
 
     def password_required?
       return false unless provider == 'email'
@@ -82,39 +88,25 @@ module DeviseTokenAuth::Concerns::User
       send_devise_notification(:unlock_instructions, raw, opts)
       raw
     end
-  end
 
-  def create_token(client_id: nil, token: nil, expiry: nil, **token_extras)
-    client_id ||= SecureRandom.urlsafe_base64(nil, false)
-    token     ||= SecureRandom.urlsafe_base64(nil, false)
-    expiry    ||= (Time.zone.now + token_lifespan).to_i
+    def create_token(client: nil, lifespan: nil, cost: nil, **token_extras)
+      token = DeviseTokenAuth::TokenFactory.create(client: client, lifespan: lifespan, cost: cost)
 
-    tokens[client_id] = {
-      token: BCrypt::Password.create(token),
-      expiry: expiry
-    }.merge!(token_extras)
+      tokens[token.client] = {
+        token:  token.token_hash,
+        expiry: token.expiry
+      }.merge!(token_extras)
 
-    clean_old_tokens
+      clean_old_tokens
 
-    [client_id, token, expiry]
-  end
-
-  module ClassMethods
-    protected
-
-    def tokens_has_json_column_type?
-      database_exists? && table_exists? && columns_hash['tokens'] && columns_hash['tokens'].type.in?([:json, :jsonb])
-    end
-
-    def database_exists?
-      ActiveRecord::Base.connection_pool.with_connection { |con| con.active? } rescue false
+      token
     end
   end
 
-  def valid_token?(token, client_id = 'default')
-    return false unless tokens[client_id]
-    return true if token_is_current?(token, client_id)
-    return true if token_can_be_reused?(token, client_id)
+  def valid_token?(token, client = 'default')
+    return false unless tokens[client]
+    return true if token_is_current?(token, client)
+    return true if token_can_be_reused?(token, client)
 
     # return false if none of the above conditions are met
     false
@@ -124,10 +116,10 @@ module DeviseTokenAuth::Concerns::User
   # can be passed on from the client
   def send_confirmation_notification?; false; end
 
-  def token_is_current?(token, client_id)
+  def token_is_current?(token, client)
     # ghetto HashWithIndifferentAccess
-    expiry     = tokens[client_id]['expiry'] || tokens[client_id][:expiry]
-    token_hash = tokens[client_id]['token'] || tokens[client_id][:token]
+    expiry     = tokens[client]['expiry'] || tokens[client][:expiry]
+    token_hash = tokens[client]['token'] || tokens[client][:token]
 
     return true if (
       # ensure that expiry and token are set
@@ -142,53 +134,52 @@ module DeviseTokenAuth::Concerns::User
   end
 
   # allow batch requests to use the previous token
-  def token_can_be_reused?(token, client_id)
+  def token_can_be_reused?(token, client)
     # ghetto HashWithIndifferentAccess
-    updated_at = tokens[client_id]['updated_at'] || tokens[client_id][:updated_at]
-    last_token = tokens[client_id]['last_token'] || tokens[client_id][:last_token]
+    updated_at = tokens[client]['updated_at'] || tokens[client][:updated_at]
+    last_token_hash = tokens[client]['last_token'] || tokens[client][:last_token]
 
     return true if (
       # ensure that the last token and its creation time exist
-      updated_at && last_token &&
+      updated_at && last_token_hash &&
 
       # ensure that previous token falls within the batch buffer throttle time of the last request
-      Time.parse(updated_at) > Time.zone.now - DeviseTokenAuth.batch_request_buffer_throttle &&
+      updated_at.to_time > Time.zone.now - DeviseTokenAuth.batch_request_buffer_throttle &&
 
       # ensure that the token is valid
-      ::BCrypt::Password.new(last_token) == token
+      DeviseTokenAuth::TokenFactory.token_hash_is_token?(last_token_hash, token)
     )
   end
 
   # update user's auth token (should happen on each request)
-  def create_new_auth_token(client_id = nil)
+  def create_new_auth_token(client = nil)
     now = Time.zone.now
 
-    client_id, token = create_token(
-      client_id: client_id,
-      expiry: (now + token_lifespan).to_i,
-      last_token: tokens.fetch(client_id, {})['token'],
-      updated_at: now
+    token = create_token(
+      client: client,
+      last_token: tokens.fetch(client, {})['token'],
+      updated_at: now.to_s(:rfc822)
     )
 
-    update_auth_header(token, client_id)
+    update_auth_header(token.token, token.client)
   end
 
-  def build_auth_header(token, client_id = 'default')
+  def build_auth_header(token, client = 'default')
     # client may use expiry to prevent validation request if expired
     # must be cast as string or headers will break
-    expiry = tokens[client_id]['expiry'] || tokens[client_id][:expiry]
+    expiry = tokens[client]['expiry'] || tokens[client][:expiry]
 
     {
       DeviseTokenAuth.headers_names[:"access-token"] => token,
       DeviseTokenAuth.headers_names[:"token-type"]   => 'Bearer',
-      DeviseTokenAuth.headers_names[:"client"]       => client_id,
+      DeviseTokenAuth.headers_names[:"client"]       => client,
       DeviseTokenAuth.headers_names[:"expiry"]       => expiry.to_s,
       DeviseTokenAuth.headers_names[:"uid"]          => uid
     }
   end
 
-  def update_auth_header(token, client_id = 'default')
-    headers = build_auth_header(token, client_id)
+  def update_auth_header(token, client = 'default')
+    headers = build_auth_header(token, client)
     clean_old_tokens
     save!
 
@@ -202,9 +193,9 @@ module DeviseTokenAuth::Concerns::User
     DeviseTokenAuth::Url.generate(base_url, args)
   end
 
-  def extend_batch_buffer(token, client_id)
-    tokens[client_id]['updated_at'] = Time.zone.now
-    update_auth_header(token, client_id)
+  def extend_batch_buffer(token, client)
+    tokens[client]['updated_at'] = Time.zone.now.to_s(:rfc822)
+    update_auth_header(token, client)
   end
 
   def confirmed?
@@ -215,15 +206,7 @@ module DeviseTokenAuth::Concerns::User
     as_json(except: %i[tokens created_at updated_at])
   end
 
-  def token_lifespan
-    DeviseTokenAuth.token_lifespan
-  end
-
   protected
-
-  def set_empty_token_hash
-    self.tokens ||= {} if has_attribute?(:tokens)
-  end
 
   def destroy_expired_tokens
     if tokens
@@ -235,11 +218,11 @@ module DeviseTokenAuth::Concerns::User
   end
 
   def should_remove_tokens_after_password_reset?
-    if Rails::VERSION::MAJOR <= 5
+    if Rails::VERSION::MAJOR <= 5 ||defined?('Mongoid')
       encrypted_password_changed? &&
         DeviseTokenAuth.remove_tokens_after_password_reset
     else
-      saved_change_to_encrypted_password? &&
+      saved_change_to_attribute?(:encrypted_password) &&
         DeviseTokenAuth.remove_tokens_after_password_reset
     end
   end
@@ -248,8 +231,8 @@ module DeviseTokenAuth::Concerns::User
     return unless should_remove_tokens_after_password_reset?
 
     if tokens.present? && tokens.many?
-      client_id, token_data = tokens.max_by { |cid, v| v[:expiry] || v['expiry'] }
-      self.tokens = { client_id => token_data }
+      client, token_data = tokens.max_by { |cid, v| v[:expiry] || v['expiry'] }
+      self.tokens = { client => token_data }
     end
   end
 
