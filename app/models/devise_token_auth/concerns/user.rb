@@ -120,6 +120,7 @@ module DeviseTokenAuth::Concerns::User
     # ghetto HashWithIndifferentAccess
     expiry     = tokens[client]['expiry'] || tokens[client][:expiry]
     token_hash = tokens[client]['token'] || tokens[client][:token]
+    previous_token_hash = tokens[client]['previous_token'] || tokens[client][:previous_token]
 
     return true if (
       # ensure that expiry and token are set
@@ -129,11 +130,24 @@ module DeviseTokenAuth::Concerns::User
       DateTime.strptime(expiry.to_s, '%s') > Time.zone.now &&
 
       # ensure that the token is valid
-      DeviseTokenAuth::Concerns::User.tokens_match?(token_hash, token)
+      (
+        # check if the latest token matches
+        does_token_match?(token_hash, token) ||
+
+        # check if the previous token matches
+        does_token_match?(previous_token_hash, token)
+      )
     )
   end
 
-  # allow batch requests to use the previous token
+  # check if the hash of received token matches the stored token
+  def does_token_match?(token_hash, token)
+    return false if token_hash.nil?
+
+    DeviseTokenAuth::Concerns::User.tokens_match?(token_hash, token)
+  end
+
+  # allow batch requests to use the last token
   def token_can_be_reused?(token, client)
     # ghetto HashWithIndifferentAccess
     updated_at = tokens[client]['updated_at'] || tokens[client][:updated_at]
@@ -143,7 +157,7 @@ module DeviseTokenAuth::Concerns::User
       # ensure that the last token and its creation time exist
       updated_at && last_token_hash &&
 
-      # ensure that previous token falls within the batch buffer throttle time of the last request
+      # ensure that last token falls within the batch buffer throttle time of the last request
       updated_at.to_time > Time.zone.now - DeviseTokenAuth.batch_request_buffer_throttle &&
 
       # ensure that the token is valid
@@ -157,8 +171,9 @@ module DeviseTokenAuth::Concerns::User
 
     token = create_token(
       client: client,
-      last_token: tokens.fetch(client, {})['token'],
-      updated_at: now.to_s(:rfc822)
+      previous_token: tokens.fetch(client, {})['token'],
+      last_token: tokens.fetch(client, {})['previous_token'],
+      updated_at: now
     )
 
     update_auth_header(token.token, token.client)
@@ -194,7 +209,7 @@ module DeviseTokenAuth::Concerns::User
   end
 
   def extend_batch_buffer(token, client)
-    tokens[client]['updated_at'] = Time.zone.now.to_s(:rfc822)
+    tokens[client]['updated_at'] = Time.zone.now
     update_auth_header(token, client)
   end
 
@@ -218,13 +233,8 @@ module DeviseTokenAuth::Concerns::User
   end
 
   def should_remove_tokens_after_password_reset?
-    if Rails::VERSION::MAJOR <= 5 ||defined?('Mongoid')
-      encrypted_password_changed? &&
-        DeviseTokenAuth.remove_tokens_after_password_reset
-    else
-      saved_change_to_attribute?(:encrypted_password) &&
-        DeviseTokenAuth.remove_tokens_after_password_reset
-    end
+    DeviseTokenAuth.remove_tokens_after_password_reset &&
+      (respond_to?(:encrypted_password_changed?) && encrypted_password_changed?)
   end
 
   def remove_tokens_after_password_reset
